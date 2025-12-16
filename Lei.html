@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#2c3e50">
+    <title>Lei Group 云端预约</title>
+    
+    <script src="//code.bdstatic.com/npm/leancloud-storage@4.12.0/dist/av-min.js"></script>
+
+    <style>
+        /* --- 样式保持不变，沿用之前的移动端优化风格 --- */
+        :root {
+            --primary-color: #2c3e50; --accent-color: #3498db; --bg-color: #eaedf1;
+            --booked-green: #27ae60; --booked-purple: #8e44ad;
+            --locked-pattern: repeating-linear-gradient(45deg, #dcdcdc, #dcdcdc 10px, #cfcfcf 10px, #cfcfcf 20px);
+        }
+        body {
+            font-family: -apple-system, "Microsoft YaHei", sans-serif;
+            background-color: var(--bg-color); margin: 0; padding: 0;
+            color: #333; height: 100vh; display: flex; flex-direction: column;
+        }
+        /* 弹窗遮罩 */
+        .overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7); display: flex; justify-content: center; align-items: center;
+            z-index: 2000; backdrop-filter: blur(3px);
+        }
+        .box {
+            background: white; padding: 25px; border-radius: 12px; width: 85%; max-width: 380px;
+            text-align: center; border-top: 5px solid var(--primary-color); box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+        .input-group input, textarea {
+            width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #bbb; border-radius: 8px;
+            box-sizing: border-box; font-size: 16px; -webkit-appearance: none;
+        }
+        .btn {
+            width: 100%; padding: 12px; margin-top: 10px; background-color: var(--primary-color);
+            color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer;
+        }
+        .btn:active { opacity: 0.8; }
+        .btn-red { background: #c0392b; } .btn-cpl { background: var(--booked-purple); }
+        .btn-green { background: var(--booked-green); } .btn-cancel { background: #7f8c8d; }
+        
+        /* 界面布局 */
+        #main-app { display: none; flex-direction: column; height: 100%; }
+        header {
+            background: var(--primary-color); color: white; padding: 0 15px; height: 50px;
+            display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+        }
+        .toolbar {
+            background: white; padding: 10px 15px; border-bottom: 1px solid #ccc;
+            display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+        }
+        .calendar-wrapper { flex: 1; overflow: auto; padding: 10px; background: #e0e5ec; -webkit-overflow-scrolling: touch; }
+        .table-container { background: white; border-radius: 6px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        table { width: 100%; min-width: 600px; border-collapse: collapse; table-layout: fixed; }
+        th, td { border: 1px solid #999; text-align: center; }
+        th { background: #f2f4f7; padding: 10px 2px; font-size: 13px; color: #333; }
+        .time-col { width: 60px; background: #fafafa; font-weight: bold; font-size: 12px; }
+        .slot-cell { height: 55px; vertical-align: top; padding: 2px; position: relative; }
+        .slot-cell.open { background: white; cursor: pointer; }
+        .slot-cell.locked { background: var(--locked-pattern); cursor: not-allowed; }
+        .slot-cell.locked::after { content: "未开放"; position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 10px; color: #666; opacity: 0.6; pointer-events: none; }
+        
+        .booking-block {
+            width: 100%; height: 100%; color: white; font-size: 11px;
+            display: flex; flex-direction: column; justify-content: center;
+            border-radius: 3px; box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+        }
+        .bg-green { background: var(--booked-green); } .bg-purple { background: var(--booked-purple); }
+        
+        /* 管理员表格 */
+        #admin-table { width: 100%; font-size: 14px; margin-top: 10px; }
+        #admin-table th, #admin-table td { padding: 5px; border: 1px solid #ccc; word-break: break-all; }
+        
+        /* 加载动画 */
+        #loading { display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:rgba(0,0,0,0.8); color:white; padding:15px; border-radius:8px; z-index:3000; }
+    </style>
+</head>
+<body>
+
+    <div id="loading">数据同步中...</div>
+
+    <div id="auth-overlay" class="overlay">
+        <div class="box" id="login-box">
+            <h2>Lei Group 云预约</h2>
+            <div class="input-group"><input type="text" id="login-name" placeholder="请输入姓名"></div>
+            <div class="input-group"><input type="password" id="login-pwd" placeholder="请输入密码"></div>
+            <button class="btn" onclick="userLogin()">登 录</button>
+            <div style="margin-top:15px; font-size:14px; color:#666; text-decoration:underline;" onclick="toggleAuth('register')">注册新账号</div>
+        </div>
+
+        <div class="box" id="register-box" style="display:none;">
+            <h2>新用户注册</h2>
+            <div class="input-group"><input type="text" id="reg-name" placeholder="真实姓名"></div>
+            <div class="input-group"><input type="password" id="reg-pwd" placeholder="设置密码"></div>
+            <button class="btn" onclick="userRegister()">立即注册</button>
+            <div style="margin-top:15px; font-size:14px; color:#666; text-decoration:underline;" onclick="toggleAuth('login')">返回登录</div>
+        </div>
+    </div>
+
+    <div id="cpl-overlay" class="overlay" style="display:none;">
+        <div class="box">
+            <h3>模式选择</h3>
+            <p>欢迎, <b id="cpl-username"></b></p>
+            <p style="font-size:13px; color:#555; background:#eee; padding:8px; border-radius:4px;">本次实验是否使用 CPL (圆偏振光)?</p>
+            <button class="btn btn-cpl" onclick="selectCPL(true)">使用 CPL (紫色)</button>
+            <button class="btn btn-green" onclick="selectCPL(false)">普通测试 (绿色)</button>
+        </div>
+    </div>
+
+    <div id="main-app">
+        <header>
+            <div style="font-weight:bold;">Lei Group <span id="admin-badge" style="display:none; background:red; font-size:10px; padding:2px 4px; border-radius:4px;">Admin</span></div>
+            <div style="font-size:12px;">
+                <button id="btn-admin" onclick="openAdmin()" style="display:none; background:#e67e22; border:none; color:white; padding:4px 8px; border-radius:4px; margin-right:5px;">管理</button>
+                <span id="nav-user"></span>
+                <button onclick="refreshData()" style="background:rgba(255,255,255,0.3); border:none; color:white; padding:4px 8px; border-radius:4px; margin-left:5px;">刷新</button>
+            </div>
+        </header>
+
+        <div class="toolbar">
+            <div id="date-display" style="font-weight:bold; color:var(--primary-color); font-size:14px;"></div>
+            <div style="font-size:12px; display:flex; gap:5px;">
+                <span style="color:var(--booked-green)">■普</span>
+                <span style="color:var(--booked-purple)">■CPL</span>
+            </div>
+        </div>
+
+        <div class="calendar-wrapper">
+            <div class="table-container">
+                <table id="schedule-table">
+                    <thead><tr id="table-head"><th class="time-col">时间</th></tr></thead>
+                    <tbody id="table-body"></tbody>
+                </table>
+            </div>
+            <div style="text-align:center; margin-top:15px; padding-bottom:20px;">
+                <button onclick="changeOffset(-4)" class="btn" style="width:auto; background:white; color:#333; border:1px solid #ccc;">«</button>
+                <button onclick="resetToday()" class="btn" style="width:auto; background:white; color:#333; border:1px solid #ccc;">今天</button>
+                <button onclick="changeOffset(4)" class="btn" style="width:auto; background:white; color:#333; border:1px solid #ccc;">»</button>
+            </div>
+        </div>
+        <footer style="text-align:center; color:#999; font-size:11px; padding:5px;">Cloud Ver 3.0</footer>
+    </div>
+
+    <div id="booking-overlay" class="overlay" style="display:none;">
+        <div class="box" style="text-align:left;">
+            <h3 id="modal-title" style="margin:0 0 10px 0; border-bottom:1px solid #eee; padding-bottom:10px;">预约</h3>
+            <div style="background:#f9f9f9; padding:10px; border-radius:6px; font-size:14px; margin-bottom:10px;">
+                <div>时间: <span id="modal-time"></span></div>
+                <div id="modal-owner-row">用户: <span id="modal-owner"></span></div>
+            </div>
+            <textarea id="modal-remark" rows="3" placeholder="实验内容备注..."></textarea>
+            <div id="modal-actions" style="display:flex; justify-content:flex-end; gap:10px; margin-top:15px;"></div>
+        </div>
+    </div>
+
+    <div id="admin-overlay" class="overlay" style="display:none;">
+        <div class="box" style="height:70vh; display:flex; flex-direction:column; max-width:500px;">
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid #eee; padding-bottom:10px;">
+                <h3>用户管理</h3>
+                <button onclick="document.getElementById('admin-overlay').style.display='none'" style="border:none; background:none; font-size:20px;">×</button>
+            </div>
+            <div style="flex:1; overflow-y:auto; margin-top:10px;">
+                <table id="admin-table"><thead><tr><th>姓名</th><th>密码</th></tr></thead><tbody id="admin-tbody"></tbody></table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==========================================
+        // 1. 配置区域 (请在此处填入 LeanCloud 的 Key)
+        // ==========================================
+        const APP_ID = "ewHiTWZ7Lw18mz4UP6I5zZkb-MdYXbMMI"; 
+        const APP_KEY = "kOygwCjqNSvhZHHvL10VCQ5f";
+        const SERVER_URL = "https://ewhitwz7.api.lncldglobal.com"; 
+
+        // 检查配置
+        if (APP_ID.includes("请在") || !APP_ID) {
+            alert("请先用记事本打开文件，填入 LeanCloud 的 AppID 和 AppKey！");
+        } else {
+            // 初始化 LeanCloud
+            AV.init({ appId: APP_ID, appKey: APP_KEY, serverURL: SERVER_URL });
+        }
+
+        // ==========================================
+        // 2. 全局变量与常量
+        // ==========================================
+        const ADMIN_NAME = "雷圣宾";
+        const ADMIN_PWD = "Lei139140";
+        const TIME_SLOTS = [
+            {s:0, e:3, l:"00-03"}, {s:3, e:6, l:"03-06"}, {s:6, e:9, l:"06-09"}, {s:9, e:12, l:"09-12"},
+            {s:12, e:15, l:"12-15"}, {s:15, e:18, l:"15-18"}, {s:18, e:21, l:"18-21"}, {s:21, e:24, l:"21-24"}
+        ];
+
+        let currentUser = null; // {name, pwd, isAdmin, objectId}
+        let isCPL = false;
+        let displayStart = new Date(); displayStart.setDate(displayStart.getDate()-1);
+        let bookingsCache = []; // 缓存预约数据
+        let currentModalData = null;
+
+        // ==========================================
+        // 3. 用户系统 (云端交互)
+        // ==========================================
+        
+        // 登录
+        async function userLogin() {
+            const name = document.getElementById('login-name').value.trim();
+            const pwd = document.getElementById('login-pwd').value.trim();
+            if(!name || !pwd) return alert("请输入完整");
+
+            // 特殊通道：管理员
+            if (name === ADMIN_NAME && pwd === ADMIN_PWD) {
+                currentUser = { name: ADMIN_NAME, isAdmin: true };
+                setupUI();
+                return;
+            }
+
+            showLoading(true);
+            try {
+                // 查询 LabUser 表
+                const query = new AV.Query('LabUser');
+                query.equalTo('name', name);
+                const results = await query.find();
+                
+                if (results.length > 0) {
+                    const userObj = results[0];
+                    if (userObj.get('pwd') === pwd) {
+                        currentUser = { name: name, isAdmin: false, objectId: userObj.id };
+                        setupUI();
+                    } else {
+                        alert("密码错误");
+                    }
+                } else {
+                    alert("用户不存在，请先注册");
+                }
+            } catch (error) {
+                alert("登录出错: " + error.message);
+            }
+            showLoading(false);
+        }
+
+        // 注册
+        async function userRegister() {
+            const name = document.getElementById('reg-name').value.trim();
+            const pwd = document.getElementById('reg-pwd').value.trim();
+            if(!name || !pwd) return alert("请输入完整");
+            if(name === ADMIN_NAME) return alert("无法注册此名字");
+
+            showLoading(true);
+            try {
+                // 检查是否重名
+                const q = new AV.Query('LabUser');
+                q.equalTo('name', name);
+                const exist = await q.count();
+                if(exist > 0) {
+                    alert("该姓名已被注册");
+                } else {
+                    // 创建新用户
+                    const LabUser = AV.Object.extend('LabUser');
+                    const u = new LabUser();
+                    u.set('name', name);
+                    u.set('pwd', pwd);
+                    await u.save();
+                    alert("注册成功，请登录");
+                    toggleAuth('login');
+                }
+            } catch (error) {
+                alert("注册失败: " + error.message);
+            }
+            showLoading(false);
+        }
+
+        // ==========================================
+        // 4. 界面逻辑
+        // ==========================================
+        function toggleAuth(mode) {
+            document.getElementById('login-box').style.display = mode==='login'?'block':'none';
+            document.getElementById('register-box').style.display = mode==='register'?'block':'none';
+        }
+
+        function setupUI() {
+            document.getElementById('auth-overlay').style.display = 'none';
+            if (currentUser.isAdmin) {
+                isCPL = false; enterMain();
+            } else {
+                document.getElementById('cpl-username').innerText = currentUser.name;
+                document.getElementById('cpl-overlay').style.display = 'flex';
+            }
+        }
+
+        function selectCPL(val) {
+            isCPL = val;
+            document.getElementById('cpl-overlay').style.display = 'none';
+            enterMain();
+        }
+
+        function enterMain() {
+            document.getElementById('main-app').style.display = 'flex';
+            document.getElementById('nav-user').innerText = currentUser.name + (currentUser.isAdmin?"":"");
+            if(currentUser.isAdmin) {
+                document.getElementById('admin-badge').style.display='inline-block';
+                document.getElementById('btn-admin').style.display='inline-block';
+            }
+            refreshData(); // 载入数据
+        }
+
+        // ==========================================
+        // 5. 核心预约逻辑 (云端交互)
+        // ==========================================
+        
+        // 拉取预约数据
+        async function refreshData() {
+            showLoading(true);
+            try {
+                const query = new AV.Query('LabBooking');
+                query.limit(1000); // 获取最近1000条
+                const results = await query.find();
+                
+                // 转换数据格式
+                bookingsCache = results.map(obj => ({
+                    id: obj.id,
+                    key: obj.get('key'), // date_hour
+                    user: obj.get('user'),
+                    remark: obj.get('remark'),
+                    isCPL: obj.get('isCPL'),
+                    obj: obj // 保留原始对象引用，方便删除
+                }));
+                renderTable();
+            } catch (error) {
+                console.error(error);
+                alert("数据同步失败，请检查网络或Key配置");
+            }
+            showLoading(false);
+        }
+
+        // 提交预约
+        async function submitBooking() {
+            if(!currentModalData || currentModalData.mode !== 'create') return;
+            
+            // 再次检查本地缓存（防止UI未刷新）
+            if(bookingsCache.find(b => b.key === currentModalData.key)) {
+                alert("慢了一步，刚才被别人约了！");
+                closeModal(); refreshData(); return;
+            }
+
+            const remark = document.getElementById('modal-remark').value || "";
+            showLoading(true);
+            
+            try {
+                // 云端保存
+                const Booking = AV.Object.extend('LabBooking');
+                const b = new Booking();
+                b.set('key', currentModalData.key);
+                b.set('user', currentUser.name);
+                b.set('remark', remark);
+                b.set('isCPL', isCPL);
+                b.set('timestamp', new Date().getTime());
+                
+                await b.save();
+                alert("预约成功");
+                closeModal();
+                refreshData(); // 重新拉取
+            } catch (error) {
+                alert("保存失败: " + error.message);
+            }
+            showLoading(false);
+        }
+
+        // 删除预约
+        async function deleteBooking() {
+            if(!currentModalData || currentModalData.mode !== 'view') return;
+            if(!confirm("确定要取消预约吗？")) return;
+            
+            showLoading(true);
+            try {
+                // 云端删除: 需要用 objectId
+                const todo = AV.Object.createWithoutData('LabBooking', currentModalData.bookingId);
+                await todo.destroy();
+                alert("已取消");
+                closeModal();
+                refreshData();
+            } catch (error) {
+                alert("删除失败: " + error.message);
+            }
+            showLoading(false);
+        }
+
+        // ==========================================
+        // 6. 日历渲染与逻辑 (本地计算)
+        // ==========================================
+        function resetToday() { displayStart = new Date(); displayStart.setDate(displayStart.getDate()-1); renderTable(); }
+        function changeOffset(d) { displayStart.setDate(displayStart.getDate()+d); renderTable(); }
+        
+        function getStatus(dateStr, startHour) {
+            const now = new Date();
+            const target = new Date(dateStr); target.setHours(0,0,0,0);
+            const today = new Date(); today.setHours(0,0,0,0);
+            const diff = Math.ceil((target - today)/(1000*3600*24));
+            
+            if(diff < 0) return 'open';
+            if(diff >= 0 && diff <= 2) return 'open'; // 今天明天后天
+            if(diff === 3) {
+                // 大后天，限时
+                const limit = new Date(); limit.setHours(startHour,0,0,0);
+                return (now.getTime() + 1000 >= limit.getTime()) ? 'open' : 'locked';
+            }
+            return 'locked';
+        }
+
+        function renderTable() {
+            const thead = document.getElementById('table-head');
+            const tbody = document.getElementById('table-body');
+            while(thead.children.length>1) thead.removeChild(thead.lastChild);
+            tbody.innerHTML = '';
+
+            const days = 4;
+            const dates = [];
+            let ptr = new Date(displayStart);
+            const weeks = ['日','一','二','三','四','五','六'];
+
+            for(let i=0; i<days; i++) {
+                const ymd = `${ptr.getFullYear()}-${String(ptr.getMonth()+1).padStart(2,'0')}-${String(ptr.getDate()).padStart(2,'0')}`;
+                const show = `${ptr.getMonth()+1}/${ptr.getDate()}`;
+                const isToday = (ymd === new Date().toISOString().split('T')[0]);
+                
+                const th = document.createElement('th');
+                th.innerHTML = `<div>${show}</div><div style="font-weight:normal;font-size:11px">${weeks[ptr.getDay()]}</div>`;
+                if(isToday) th.style.color = 'red';
+                thead.appendChild(th);
+                dates.push(ymd);
+                ptr.setDate(ptr.getDate()+1);
+            }
+            document.getElementById('date-display').innerText = `${dates[0].substr(5)} ~ ${dates[dates.length-1].substr(5)}`;
+
+            TIME_SLOTS.forEach(slot => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td class="time-col">${slot.l}</td>`;
+                dates.forEach(dStr => {
+                    const td = document.createElement('td');
+                    td.className = 'slot-cell';
+                    const key = `${dStr}_${slot.s}`;
+                    const booking = bookingsCache.find(b => b.key === key);
+                    
+                    if(booking) {
+                        const bg = booking.isCPL ? 'bg-purple' : 'bg-green';
+                        td.innerHTML = `<div class="booking-block ${bg}"><div>${booking.user}</div></div>`;
+                        td.onclick = () => openModal(dStr, slot, key, booking);
+                    } else {
+                        const status = getStatus(dStr, slot.s);
+                        if(status === 'open') {
+                            td.classList.add('open');
+                            td.onclick = () => openModal(dStr, slot, key, null);
+                        } else {
+                            td.classList.add('locked');
+                        }
+                    }
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+        }
+
+        // ==========================================
+        // 7. 辅助功能 (弹窗/管理)
+        // ==========================================
+        function openModal(dateStr, slot, key, booking) {
+            const modal = document.getElementById('booking-overlay');
+            const timeStr = `${dateStr} ${slot.l}`;
+            document.getElementById('modal-time').innerText = timeStr;
+            const remarkArea = document.getElementById('modal-remark');
+            const actions = document.getElementById('modal-actions');
+            actions.innerHTML = '';
+
+            if (booking) {
+                // 查看模式
+                currentModalData = { mode: 'view', bookingId: booking.id };
+                document.getElementById('modal-title').innerText = "详情";
+                document.getElementById('modal-owner-row').style.display = 'block';
+                document.getElementById('modal-owner').innerText = booking.user + (booking.isCPL?" (CPL)":" (普通)");
+                remarkArea.value = booking.remark;
+                remarkArea.disabled = true;
+
+                actions.innerHTML += `<button class="btn btn-cancel" style="width:auto;margin:0" onclick="closeModal()">关闭</button>`;
+                // 删除权限：自己 或 管理员
+                if(currentUser.isAdmin || currentUser.name === booking.user) {
+                    const btnTxt = currentUser.isAdmin ? "强制删除" : "取消预约";
+                    actions.innerHTML += `<button class="btn btn-red" style="width:auto;margin:0" onclick="deleteBooking()">${btnTxt}</button>`;
+                }
+            } else {
+                // 预约模式
+                currentModalData = { mode: 'create', key: key };
+                document.getElementById('modal-title').innerText = "新建预约 (" + (isCPL?"CPL":"普通") + ")";
+                document.getElementById('modal-owner-row').style.display = 'none';
+                remarkArea.value = '';
+                remarkArea.disabled = false;
+                
+                actions.innerHTML += `<button class="btn btn-cancel" style="width:auto;margin:0" onclick="closeModal()">取消</button>`;
+                actions.innerHTML += `<button class="btn" style="width:auto;margin:0;background:${isCPL?'#8e44ad':'#27ae60'}" onclick="submitBooking()">确定</button>`;
+            }
+            modal.style.display = 'flex';
+        }
+
+        function closeModal() { document.getElementById('booking-overlay').style.display = 'none'; }
+        function showLoading(show) { document.getElementById('loading').style.display = show?'block':'none'; }
+
+        // 管理面板：获取所有用户
+        async function openAdmin() {
+            showLoading(true);
+            try {
+                const q = new AV.Query('LabUser');
+                const users = await q.find();
+                const tbody = document.getElementById('admin-tbody');
+                tbody.innerHTML = '';
+                users.forEach(u => {
+                    tbody.innerHTML += `<tr><td>${u.get('name')}</td><td>${u.get('pwd')}</td></tr>`;
+                });
+                document.getElementById('admin-overlay').style.display = 'flex';
+            } catch (e) { alert("获取用户失败"); }
+            showLoading(false);
+        }
+    </script>
+</body>
+</html>
